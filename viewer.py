@@ -22,17 +22,79 @@ from scipy.spatial import cKDTree
 from vispy import scene
 from vispy.color import Colormap, get_colormap
 from vispy.util.quaternion import Quaternion as VispyQuat
+from vispy.visuals.filters import Filter
 
 from process import (
     PointCloud, SPECTYPE_GALAXY, SPECTYPE_QSO, SPECTYPE_OTHER,
 )
 
 
+# --- depth fog filter --------------------------------------------------------
+
+
+class _FogFilter(Filter):
+    """Depth fog using gl_Position.w (linear eye distance).
+
+    Dims distant points linearly: full brightness at camera, floor
+    brightness at fog_end Mpc.
+    """
+
+    _VERT = """
+    varying float v_fog_w;
+    void fog_vert() {
+        v_fog_w = gl_Position.w;
+    }
+    """
+
+    _FRAG = """
+    varying float v_fog_w;
+    void fog_frag() {
+        if (v_fog_w > $render_dist) discard;
+        float fog = clamp(1.0 - v_fog_w / $fog_end, $fog_floor, 1.0);
+        gl_FragColor.a *= fog;
+    }
+    """
+
+    def __init__(self, fog_end: float = 8000.0, floor: float = 0.15,
+                 render_dist: float = 1e9):
+        super().__init__(vcode=self._VERT, fcode=self._FRAG)
+        self.fog_end = fog_end
+        self.floor = floor
+        self.render_dist = render_dist
+
+    @property
+    def fog_end(self) -> float:
+        return self._fog_end
+
+    @fog_end.setter
+    def fog_end(self, v: float) -> None:
+        self._fog_end = v
+        self.fshader['fog_end'] = float(v)
+
+    @property
+    def floor(self) -> float:
+        return self._floor
+
+    @floor.setter
+    def floor(self, v: float) -> None:
+        self._floor = v
+        self.fshader['fog_floor'] = float(v)
+
+    @property
+    def render_dist(self) -> float:
+        return self._render_dist
+
+    @render_dist.setter
+    def render_dist(self, v: float) -> None:
+        self._render_dist = v
+        self.fshader['render_dist'] = float(v)
+
+
 # --- visual tuning constants -------------------------------------------------
 
 POINT_SIZE_MIN = 1.0
 POINT_SIZE_MAX = 4.0
-POINT_ALPHA = 1.0                        # semi-transparent for depth layering
+POINT_ALPHA = 0.7                        # semi-transparent for depth layering
 LOD_FRACTION = 0.5                       # subset size when LOD active
 LOD_IDLE_MS = 180                        # restore full set after this much idle
 LOD_AUTO_THRESHOLD = 5_000_000           # default LOD on only when n >= this
@@ -44,7 +106,7 @@ BASE_SPEED_MUL = 0.03                    # baseline _speed_mul — chosen so a
 BACKGROUND_COLOR = (0.0, 0.0, 0.015, 1.0)
 
 PICK_RAY_SAMPLES = 2000
-PICK_RADIUS_PX = 40.0
+PICK_RADIUS_PX = 8.0
 HIGHLIGHT_SIZE = 14.0
 HIGHLIGHT_COLOR = np.array([[1.0, 1.0, 0.4, 0.9]], dtype=np.float32)
 
@@ -355,7 +417,7 @@ def _look_at_quat(eye: np.ndarray, target: np.ndarray) -> np.ndarray:
 @dataclass
 class ViewerState:
     size_mode: str = "lum"              # "lum" | "flux"
-    color_mode: str = "redshift"        # "spectype" | "redshift" | "absmag"
+    color_mode: str = "subtype"         # spectype|redshift|absmag|subtype|gr|lookback
     camera_mode: str = "fly"            # "fly" | "turntable"
     lod_enabled: bool = True            # user can force-disable with K
     lod_active: bool = False
@@ -366,7 +428,7 @@ class ViewerState:
 # --- main viewer -------------------------------------------------------------
 
 class Viewer:
-    def __init__(self, pc: PointCloud):
+    def __init__(self, pc: PointCloud, dataset: str = "DR1"):
         self.pc = pc
         self.state = ViewerState()
 
@@ -399,7 +461,7 @@ class Viewer:
         self.state.lod_enabled = False
 
         self.canvas = scene.SceneCanvas(
-            title="DESI DR1 Map Explorer",
+            title=f"DESI {dataset.upper()} Map Explorer",
             keys="interactive",
             size=(1400, 900),
             bgcolor=BACKGROUND_COLOR,
@@ -413,9 +475,11 @@ class Viewer:
         # bright regions a natural glow — closer to what a real star field
         # looks like than opaque discs.
         self.markers.set_gl_state(
-            "translucent", depth_test=False, blend=True,
-            blend_func=("src_alpha", "one_minus_src_alpha"),
+            "additive", depth_test=False, blend=True,
+            blend_func=("src_alpha", "one"),
         )
+        self._fog = _FogFilter(floor=0.15)
+        self.markers.attach(self._fog)
 
         self._highlight = scene.visuals.Markers(parent=self.view.scene)
         self._highlight.set_data(
@@ -429,6 +493,10 @@ class Viewer:
             blend_func=("src_alpha", "one_minus_src_alpha"),
         )
         self._highlight.visible = False
+
+        self._grid_visuals: list = []
+        self._grid_visible = False
+        self._build_grid()
 
         self._held_keys: set[str] = set()
         self._last_input_time = time.monotonic()
@@ -529,10 +597,93 @@ class Viewer:
         cam.auto_roll = False
         # Strip out keyboard yaw/pitch/roll bindings (mouse does looking).
         # Also free up I, J, K, L for our UI controls.
-        to_drop = {"I", "J", "K", "L", "Q", "E"}
+        to_drop = {"I", "J", "K", "L"}
         cam._keymap = {k: v for k, v in cam._keymap.items()
                        if k not in to_drop}
         return cam
+
+    def _build_grid(self) -> None:
+        radii = [1000, 2000, 4000, 6000]
+        grid_alpha = 0.12
+        n_seg = 80
+
+        for r in radii:
+            for gen in (self._sphere_ring_xy, self._sphere_ring_xz,
+                        self._sphere_ring_yz):
+                pts = gen(r, n_seg)
+                line = scene.visuals.Line(
+                    pos=pts, color=(0.5, 0.5, 0.7, grid_alpha),
+                    parent=self.view.scene, width=1.0,
+                )
+                line.visible = False
+                self._grid_visuals.append(line)
+
+            label = scene.visuals.Text(
+                text=f"{r} Mpc",
+                pos=(r, 0, 0), color=(0.6, 0.6, 0.8, 0.35),
+                font_size=8, parent=self.view.scene,
+                anchor_x="left", anchor_y="bottom",
+            )
+            label.visible = False
+            self._grid_visuals.append(label)
+
+        axis_len = max(radii) * 1.1
+        axis_colors = [
+            (1.0, 0.3, 0.3, grid_alpha * 1.5),
+            (0.3, 1.0, 0.3, grid_alpha * 1.5),
+            (0.3, 0.3, 1.0, grid_alpha * 1.5),
+        ]
+        for i, color in enumerate(axis_colors):
+            pts = np.zeros((2, 3), dtype=np.float32)
+            pts[0, i] = -axis_len
+            pts[1, i] = axis_len
+            line = scene.visuals.Line(
+                pos=pts, color=color,
+                parent=self.view.scene, width=1.0,
+            )
+            line.visible = False
+            self._grid_visuals.append(line)
+
+    @staticmethod
+    def _sphere_ring_xy(r: float, n: int) -> np.ndarray:
+        t = np.linspace(0, 2 * np.pi, n + 1, dtype=np.float32)
+        pts = np.zeros((n + 1, 3), dtype=np.float32)
+        pts[:, 0] = r * np.cos(t)
+        pts[:, 1] = r * np.sin(t)
+        return pts
+
+    @staticmethod
+    def _sphere_ring_xz(r: float, n: int) -> np.ndarray:
+        t = np.linspace(0, 2 * np.pi, n + 1, dtype=np.float32)
+        pts = np.zeros((n + 1, 3), dtype=np.float32)
+        pts[:, 0] = r * np.cos(t)
+        pts[:, 2] = r * np.sin(t)
+        return pts
+
+    @staticmethod
+    def _sphere_ring_yz(r: float, n: int) -> np.ndarray:
+        t = np.linspace(0, 2 * np.pi, n + 1, dtype=np.float32)
+        pts = np.zeros((n + 1, 3), dtype=np.float32)
+        pts[:, 1] = r * np.cos(t)
+        pts[:, 2] = r * np.sin(t)
+        return pts
+
+    def _adjust_render_dist(self, key: str) -> None:
+        factor = 1.5 if key == "]" else 1.0 / 1.5
+        new_dist = self._fog.render_dist * factor
+        new_dist = float(np.clip(new_dist, 10.0, self._scene_extent * 2.0))
+        self._fog.render_dist = new_dist
+        self._fog.fog_end = new_dist * 0.9
+        print(f"[viewer] render distance: {new_dist:.0f} Mpc")
+        self._update_status()
+        self.canvas.update()
+
+    def _toggle_grid(self) -> None:
+        self._grid_visible = not self._grid_visible
+        for v in self._grid_visuals:
+            v.visible = self._grid_visible
+        self.canvas.update()
+        print(f"[viewer] grid {'on' if self._grid_visible else 'off'}")
 
     def _build_kdtree(self) -> None:
         t0 = time.monotonic()
@@ -583,6 +734,7 @@ class Viewer:
             "DESI Map Explorer — controls:\n"
             "  W/A/S/D  : move\n"
             "  F / C    : up / down\n"
+            "  Q / E    : roll left / right\n"
             "  Shift    : 5x speed boost (hold)\n"
             "  RMB drag : look around\n"
             "  Wheel    : adjust speed\n"
@@ -591,6 +743,8 @@ class Viewer:
             "  V        : cycle color mode\n"
             "               redshift / abs-mag / spectype /\n"
             "               subtype / g-r color / lookback time\n"
+            "  [ / ]    : decrease / increase render distance\n"
+            "  J        : toggle distance grid\n"
             "  G        : toggle color legend\n"
             "  L        : toggle size (luminosity <-> apparent flux)\n"
             "  K        : toggle LOD on/off\n"
@@ -608,8 +762,8 @@ class Viewer:
             f"n={self.pc.n:,}  size={self.state.size_mode}  "
             f"color={self.state.color_mode}  cam={self.state.camera_mode}  "
             f"spd={self.state.base_speed_mul:.1e}  "
-            f"LOD={lod_str}{lod_active}  fps={fps:5.1f}  rss={mem:.0f}MB{sel}  "
-            f"H=help"
+            f"LOD={lod_str}{lod_active}  dist={self._fog.render_dist:.0f}Mpc  "
+            f"fps={fps:5.1f}  rss={mem:.0f}MB{sel}  H=help"
         )
 
     def _on_resize(self, event) -> None:
@@ -646,6 +800,10 @@ class Viewer:
             self._toggle_camera()
         elif key == "K":
             self._toggle_lod_enabled()
+        elif key in ("[", "]"):
+            self._adjust_render_dist(key)
+        elif key == "J":
+            self._toggle_grid()
         elif key == "G":
             self._toggle_legend()
         elif key == "H":
@@ -849,7 +1007,7 @@ class Viewer:
             print("[viewer] spatial index still building, try again")
             return None
         origin, ray_dir = self._screen_to_ray(sx, sy)
-        max_dist = self._scene_extent * 2.0
+        max_dist = min(self._fog.render_dist, self._scene_extent * 2.0)
         t_vals = np.unique(np.concatenate([
             np.geomspace(0.01, 100.0, PICK_RAY_SAMPLES // 4),
             np.linspace(100.0, max_dist, PICK_RAY_SAMPLES * 3 // 4),
@@ -865,11 +1023,16 @@ class Viewer:
             np.linalg.norm(perp, axis=1), np.abs(proj_len),
         )
         angular[proj_len <= 0] = np.inf
+        cam_dist = np.linalg.norm(v, axis=1)
+        angular[cam_dist > self._fog.render_dist] = np.inf
         h_px = self.canvas.size[1]
         max_angle = (np.radians(self._fly.fov) / h_px) * PICK_RADIUS_PX
-        best = int(np.argmin(angular))
-        if angular[best] > max_angle:
+        within = angular <= max_angle
+        if not np.any(within):
             return None
+        cam_dist_pick = cam_dist.copy()
+        cam_dist_pick[~within] = np.inf
+        best = int(np.argmin(cam_dist_pick))
         return int(unique_idx[best])
 
     def _select(self, idx: int) -> None:
@@ -937,10 +1100,10 @@ class Viewer:
         dec = float(pc.target_dec[idx])
         tid = int(pc.target_id[idx])
 
-        spec_url = (f"https://www.legacysurvey.org/viewer/"
-                    f"desi-spectrum/daily/targetid{tid}")
         img_url = (f"https://www.legacysurvey.org/viewer"
                    f"?ra={ra:.6f}&dec={dec:.6f}&layer=ls-dr10&zoom=16")
+        wide_url = (f"https://www.legacysurvey.org/viewer"
+                    f"?ra={ra:.6f}&dec={dec:.6f}&layer=ls-dr10&zoom=12")
         ned_url = (f"https://ned.ipac.caltech.edu/cgi-bin/nph-objsearch"
                    f"?search_type=Near+Position+Search"
                    f"&in_csys=Equatorial&in_equinox=J2000.0"
@@ -976,9 +1139,9 @@ class Viewer:
             f"<span style='color:{g}'>RA / Dec</span> "
             f"{ra:.4f}&deg; / {dec:.4f}&deg;<br>"
             f"<br>"
-            f"<a href='{spec_url}'>DESI Spectrum</a>"
+            f"<a href='{img_url}'>Sky Close-up</a>"
             f" &nbsp;&#8226;&nbsp; "
-            f"<a href='{img_url}'>Sky Image</a><br>"
+            f"<a href='{wide_url}'>Wide Field</a><br>"
             f"<a href='{ned_url}'>NED</a>"
             f" &nbsp;&#8226;&nbsp; "
             f"<a href='{simbad_url}'>SIMBAD</a>"
@@ -1040,6 +1203,8 @@ class Viewer:
         # individual galaxy. Z-buffer precision is not a concern for a pure
         # point cloud (no overlapping opaque surfaces).
         self._fly.depth_value = 1e12
+        self._fog.fog_end = extent * 1.1
+        self._fog.render_dist = 256.0
         self._turn.scale_factor = extent
         self._turn.depth_value = 1e12
         self._turn.center = (0.0, 0.0, 0.0)
@@ -1060,7 +1225,7 @@ def _rss_mb() -> float:
         return 0.0
 
 
-def run_viewer(pc: PointCloud) -> int:
+def run_viewer(pc: PointCloud, dataset: str = "DR1") -> int:
     from vispy import app as vispy_app
 
     app = vispy_app.use_app("pyqt6")
@@ -1070,7 +1235,7 @@ def run_viewer(pc: PointCloud) -> int:
     print(f"[viewer] starting | points={pc.n:,} | xyz={pc.xyz.nbytes/1e6:.1f} MB "
           f"| rss={mem0:.0f} MB | flux_column={pc.flux_column}")
 
-    viewer = Viewer(pc)
+    viewer = Viewer(pc, dataset=dataset)
     viewer.center_camera()
     viewer.show()
 

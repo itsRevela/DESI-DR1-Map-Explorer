@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         print("[main] --no-view set; exiting before viewer.")
         return 0
 
-    return run_viewer(pc)
+    return run_viewer(pc, dataset=args.dataset)
 
 
 if __name__ == "__main__":

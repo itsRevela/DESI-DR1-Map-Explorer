@@ -32,7 +32,7 @@ from process import (
 
 POINT_SIZE_MIN = 1.0
 POINT_SIZE_MAX = 4.0
-POINT_ALPHA = 0.7                        # baseline alpha so overlaps glow additively
+POINT_ALPHA = 1.0                        # semi-transparent for depth layering
 LOD_FRACTION = 0.5                       # subset size when LOD active
 LOD_IDLE_MS = 180                        # restore full set after this much idle
 LOD_AUTO_THRESHOLD = 5_000_000           # default LOD on only when n >= this
@@ -79,7 +79,6 @@ class _FlyCameraNoWheel(scene.cameras.FlyCamera):
         self._lock_ref_dist: float = 1.0
         self._drag_active: bool = False
         self._drag_last_pos = np.zeros(2)
-        self._ignore_warp: bool = False
 
     def viewbox_mouse_event(self, event):    # type: ignore[override]
         if event.type == "mouse_wheel":
@@ -90,7 +89,6 @@ class _FlyCameraNoWheel(scene.cameras.FlyCamera):
         if event.type == "mouse_press" and me._button == 2:
             self._drag_active = True
             self._drag_last_pos = np.array(me.pos[:2], dtype=float)
-            self._ignore_warp = False
             self._viewbox.canvas.native.setCursor(
                 Qt.CursorShape.BlankCursor)
             event.handled = True
@@ -113,16 +111,15 @@ class _FlyCameraNoWheel(scene.cameras.FlyCamera):
                 return
             if not self._drag_active:
                 return
-            if self._ignore_warp:
-                self._drag_last_pos = np.array(me.pos[:2], dtype=float)
-                self._ignore_warp = False
-                return
 
             pos = np.array(me.pos[:2], dtype=float)
             delta = pos - self._drag_last_pos
             self._drag_last_pos = pos.copy()
 
             w, h = self._viewbox.size
+            if abs(delta[0]) > w * 0.1 or abs(delta[1]) > h * 0.1:
+                return
+
             d_az = float(delta[0] / w) * 0.5 * np.pi
             d_el = float(delta[1] / h) * 0.5 * np.pi
 
@@ -132,9 +129,12 @@ class _FlyCameraNoWheel(scene.cameras.FlyCamera):
                 (q_el * q_az).normalize() * self._rotation2
             ).normalize()
 
-            native = self._viewbox.canvas.native
-            QCursor.setPos(native.mapToGlobal(native.rect().center()))
-            self._ignore_warp = True
+            margin = min(w, h) * 0.05
+            if (pos[0] < margin or pos[0] > w - margin
+                    or pos[1] < margin or pos[1] > h - margin):
+                native = self._viewbox.canvas.native
+                QCursor.setPos(
+                    native.mapToGlobal(native.rect().center()))
 
             self._update_from_mouse = True
             event.handled = True
@@ -396,7 +396,7 @@ class Viewer:
         # Default LOD on only for catalogs large enough to actually need it.
         # At ~1M points modern GPUs render full interactively; the flicker of
         # swapping to a subset during motion is more distracting than helpful.
-        self.state.lod_enabled = pc.n >= LOD_AUTO_THRESHOLD
+        self.state.lod_enabled = False
 
         self.canvas = scene.SceneCanvas(
             title="DESI DR1 Map Explorer",
@@ -413,8 +413,8 @@ class Viewer:
         # bright regions a natural glow — closer to what a real star field
         # looks like than opaque discs.
         self.markers.set_gl_state(
-            "additive", depth_test=False, blend=True,
-            blend_func=("src_alpha", "one"),
+            "translucent", depth_test=False, blend=True,
+            blend_func=("src_alpha", "one_minus_src_alpha"),
         )
 
         self._highlight = scene.visuals.Markers(parent=self.view.scene)
@@ -425,8 +425,8 @@ class Viewer:
             edge_width=0.0, symbol="disc",
         )
         self._highlight.set_gl_state(
-            "additive", depth_test=False, blend=True,
-            blend_func=("src_alpha", "one"),
+            "translucent", depth_test=False, blend=True,
+            blend_func=("src_alpha", "one_minus_src_alpha"),
         )
         self._highlight.visible = False
 
@@ -473,7 +473,7 @@ class Viewer:
         self._help_label.setText(self._help_content())
         self._help_label.adjustSize()
         self._help_label.move(10, 10)
-        self._help_label.hide()
+        self._help_label.show()
 
         self._status_text = scene.visuals.Text(
             text="",
@@ -517,11 +517,10 @@ class Viewer:
             "  font-size: 9pt;"
             "}"
         )
-        self._legend_label.hide()
-
         self.canvas.events.resize.connect(self._on_resize)
 
         self._update_status()
+        self._update_legend()
 
     # -- camera setup ---------------------------------------------------------
 
@@ -532,7 +531,7 @@ class Viewer:
         # Also free up I, J, K, L for our UI controls.
         to_drop = {"I", "J", "K", "L", "Q", "E"}
         cam._keymap = {k: v for k, v in cam._keymap.items()
-                       if str(k).strip("<>Key '").rstrip("'") not in to_drop}
+                       if k not in to_drop}
         return cam
 
     def _build_kdtree(self) -> None:
@@ -851,9 +850,12 @@ class Viewer:
             return None
         origin, ray_dir = self._screen_to_ray(sx, sy)
         max_dist = self._scene_extent * 2.0
-        t_vals = np.linspace(0.01, max_dist, PICK_RAY_SAMPLES)
+        t_vals = np.unique(np.concatenate([
+            np.geomspace(0.01, 100.0, PICK_RAY_SAMPLES // 4),
+            np.linspace(100.0, max_dist, PICK_RAY_SAMPLES * 3 // 4),
+        ]))
         samples = origin + ray_dir * t_vals[:, None]
-        _, indices = tree.query(samples, k=3)
+        _, indices = tree.query(samples, k=5)
         unique_idx = np.unique(indices.ravel())
         candidates = self.pc.xyz[unique_idx].astype(np.float64)
         v = candidates - origin

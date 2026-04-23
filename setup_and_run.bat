@@ -17,8 +17,8 @@ echo.
 :: --- Check required files ---
 if not exist "%SCRIPT_DIR%requirements.txt" goto :no_requirements
 
-:: --- Check for Python ---
-where python >nul 2>&1
+:: --- Check for Python (not just the Windows Store alias) ---
+python -c "import sys" >nul 2>&1
 if !errorlevel! neq 0 goto :install_python
 goto :check_version
 
@@ -52,7 +52,8 @@ for /f "tokens=1,2 delims=." %%a in ("!PYVER_FULL!") do (
     set "PYMIN=%%b"
 )
 echo  [OK] Python !PYVER_FULL! detected
-if !PYMAJ! equ 0 goto :bad_version
+set /a "_test=!PYMAJ!+0" >nul 2>&1
+if !_test! equ 0 goto :bad_version
 if !PYMAJ! lss 3 goto :bad_version
 if !PYMAJ! equ 3 if !PYMIN! lss 13 goto :bad_version
 echo.
@@ -163,4 +164,6 @@ echo  [ERROR] Failed to install dependencies. Cleaning up...
 rmdir /s /q venv
 pause
 exit /b 1
+
+
 

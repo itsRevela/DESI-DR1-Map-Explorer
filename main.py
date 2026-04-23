@@ -20,7 +20,7 @@ DATASETS = {
     "edr": ("zall-pix-fuji.fits", EDR_URL,
             "EDR / fuji (~2 GB, ~1.2M filtered points)"),
     "dr1": ("zall-pix-iron.fits", DR1_URL,
-            "DR1 / iron (~6-8 GB, ~18M filtered points)"),
+            "DR1 / iron (~21 GB, ~18M filtered points)"),
 }
 
 

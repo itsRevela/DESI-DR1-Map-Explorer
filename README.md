@@ -38,7 +38,7 @@ pip install -r requirements.txt
 # Run with the EDR dataset (~2 GB download, ~1.2M points)
 python main.py --dataset edr
 
-# Run with the full DR1 dataset (~6-8 GB download, ~18M points)
+# Run with the full DR1 dataset (~21 GB download, ~18M points)
 python main.py --dataset dr1
 ```
 

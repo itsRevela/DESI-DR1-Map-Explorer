@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 
 EDR_URL = "https://data.desi.lbl.gov/public/edr/spectro/redux/fuji/zcatalog/zall-pix-fuji.fits"
-DR1_URL = "https://data.desi.lbl.gov/public/dr1/spectro/redux/iron/zcatalog/zall-pix-iron.fits"
+DR1_URL = "https://data.desi.lbl.gov/public/dr1/spectro/redux/iron/zcatalog/v1/zall-pix-iron.fits"
 
 CHUNK = 1 << 20           # 1 MiB
 CONNECT_TIMEOUT = 15.0    # seconds

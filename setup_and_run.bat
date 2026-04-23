@@ -7,8 +7,6 @@ cd /d "%SCRIPT_DIR%"
 
 set "PY_VER=3.14.3"
 set "PY_DIR=Python314"
-set "PY_MIN_MAJOR=3"
-set "PY_MIN_MINOR=13"
 
 echo.
 echo  ============================================
@@ -16,69 +14,35 @@ echo   DESI Map Explorer - Setup and Launch
 echo  ============================================
 echo.
 
-:: --- Check for required files ---
-if not exist "%SCRIPT_DIR%requirements.txt" (
-    echo  [ERROR] requirements.txt not found.
-    echo  Run this script from the project directory.
-    pause
-    exit /b 1
-)
+:: --- Check required files ---
+if not exist "%SCRIPT_DIR%requirements.txt" goto :no_requirements
 
 :: --- Check for Python ---
 where python >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [!] Python not found on your system.
-    echo.
+if !errorlevel! neq 0 goto :install_python
+goto :check_version
 
-    where curl >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo  [ERROR] curl is not available to download Python.
-        echo  Please install Python %PY_VER% manually:
-        echo  https://www.python.org/downloads/
-        pause
-        exit /b 1
-    )
+:install_python
+echo  Python not found on your system.
+echo.
+where curl >nul 2>&1
+if !errorlevel! neq 0 goto :no_curl
+echo  Downloading Python %PY_VER% installer...
+echo.
+curl -L --fail -o "%TEMP%\python-installer.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe"
+if !errorlevel! neq 0 goto :download_failed
+echo.
+echo  Running Python installer...
+echo  IMPORTANT: Make sure "Add Python to PATH" is checked!
+echo.
+start /wait "" "%TEMP%\python-installer.exe" InstallAllUsers=0 PrependPath=1 Include_test=0
+del "%TEMP%\python-installer.exe" >nul 2>&1
+set "PATH=%LocalAppData%\Programs\Python\%PY_DIR%\;%LocalAppData%\Programs\Python\%PY_DIR%\Scripts\;%PATH%"
+where python >nul 2>&1
+if !errorlevel! neq 0 goto :python_not_found_after
+goto :check_version
 
-    echo  Downloading Python %PY_VER% installer...
-    echo.
-    curl -L --fail -o "%TEMP%\python-installer.exe" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-amd64.exe"
-    if %errorlevel% neq 0 (
-        echo  [ERROR] Failed to download Python installer.
-        echo  Please install Python %PY_VER% manually:
-        echo  https://www.python.org/downloads/
-        pause
-        exit /b 1
-    )
-
-    echo.
-    echo  Running Python installer...
-    echo  IMPORTANT: Make sure "Add Python to PATH" is checked!
-    echo.
-    start /wait "" "%TEMP%\python-installer.exe" InstallAllUsers=0 PrependPath=1 Include_test=0
-    if %errorlevel% neq 0 (
-        echo  [ERROR] Python installer exited with an error.
-        echo  If you cancelled, please re-run this script.
-        del "%TEMP%\python-installer.exe" >nul 2>&1
-        pause
-        exit /b 1
-    )
-    del "%TEMP%\python-installer.exe" >nul 2>&1
-
-    :: Refresh PATH for this session
-    set "PATH=%LocalAppData%\Programs\Python\%PY_DIR%\;%LocalAppData%\Programs\Python\%PY_DIR%\Scripts\;%PATH%"
-
-    where python >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo.
-        echo  [ERROR] Python still not found after installation.
-        echo  Please close this window, reopen a new terminal,
-        echo  and run this script again.
-        pause
-        exit /b 1
-    )
-)
-
-:: --- Version check ---
+:check_version
 set "PYVER_FULL=unknown"
 set "PYMAJ=0"
 set "PYMIN=0"
@@ -88,64 +52,39 @@ for /f "tokens=1,2 delims=." %%a in ("!PYVER_FULL!") do (
     set "PYMIN=%%b"
 )
 echo  [OK] Python !PYVER_FULL! detected
-
-if !PYMAJ! equ 0 (
-    echo  [ERROR] Could not determine Python version.
-    echo  Make sure Python is installed correctly and not the Windows Store stub.
-    echo  https://www.python.org/downloads/
-    pause
-    exit /b 1
-)
-if !PYMAJ! lss %PY_MIN_MAJOR% (
-    echo  [ERROR] Python %PY_MIN_MAJOR%.%PY_MIN_MINOR%+ is required. Found: !PYVER_FULL!
-    pause
-    exit /b 1
-)
-if !PYMAJ! equ %PY_MIN_MAJOR% if !PYMIN! lss %PY_MIN_MINOR% (
-    echo  [ERROR] Python %PY_MIN_MAJOR%.%PY_MIN_MINOR%+ is required. Found: !PYVER_FULL!
-    pause
-    exit /b 1
-)
+if !PYMAJ! equ 0 goto :bad_version
+if !PYMAJ! lss 3 goto :bad_version
+if !PYMAJ! equ 3 if !PYMIN! lss 13 goto :bad_version
 echo.
 
-:: --- Create or verify venv ---
-if exist "venv\Scripts\python.exe" (
-    venv\Scripts\python --version >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo  [!] Existing venv is broken. Recreating...
-        rmdir /s /q venv
-    )
-)
+:: --- Check venv ---
+if not exist "venv\Scripts\python.exe" goto :create_venv
+venv\Scripts\python --version >nul 2>&1
+if !errorlevel! neq 0 goto :recreate_venv
+echo  [OK] Virtual environment ready
+echo.
+goto :choose_dataset
 
-if not exist "venv\Scripts\python.exe" (
-    echo  [..] Creating virtual environment...
-    python -m venv venv
-    if %errorlevel% neq 0 (
-        echo  [ERROR] Failed to create virtual environment.
-        pause
-        exit /b 1
-    )
-    echo  [OK] Virtual environment created
-    echo.
+:recreate_venv
+echo  Existing venv is broken. Recreating...
+rmdir /s /q venv
 
-    echo  [..] Installing dependencies (this may take a minute)...
-    venv\Scripts\pip install --upgrade pip >nul 2>&1
-    venv\Scripts\pip install -r requirements.txt
-    if %errorlevel% neq 0 (
-        echo.
-        echo  [ERROR] Failed to install dependencies. Cleaning up...
-        rmdir /s /q venv
-        pause
-        exit /b 1
-    )
-    echo.
-    echo  [OK] All dependencies installed
-) else (
-    echo  [OK] Virtual environment ready
-)
+:create_venv
+echo  Creating virtual environment...
+python -m venv venv
+if !errorlevel! neq 0 goto :venv_failed
+echo  [OK] Virtual environment created
+echo.
+echo  Installing dependencies (this may take a minute)...
+venv\Scripts\pip install --upgrade pip >nul 2>&1
+venv\Scripts\pip install -r requirements.txt
+if !errorlevel! neq 0 goto :deps_failed
+echo.
+echo  [OK] All dependencies installed
 echo.
 
 :: --- Dataset selection ---
+:choose_dataset
 echo  ============================================
 echo   Choose a dataset:
 echo  ============================================
@@ -164,27 +103,64 @@ echo.
 set "choice="
 set /p choice="  Enter choice (1 or 2): "
 
-if "!choice!"=="1" (
-    set "DATASET=edr"
-    echo.
-    echo  Starting with EDR dataset...
-) else if "!choice!"=="2" (
-    set "DATASET=dr1"
-    echo.
-    echo  Starting with DR1 dataset...
-) else (
-    echo.
-    echo  Invalid choice, defaulting to EDR...
-    set "DATASET=edr"
-)
+if "!choice!"=="1" set "DATASET=edr" & goto :launch
+if "!choice!"=="2" set "DATASET=dr1" & goto :launch
+echo  Invalid choice, defaulting to EDR...
+set "DATASET=edr"
 
+:launch
 echo.
 echo  First launch will download the FITS catalog.
 echo  This may take a while depending on your connection.
 echo  The download supports resume if interrupted.
 echo.
-
 venv\Scripts\python main.py --dataset "!DATASET!"
-
 echo.
 pause
+exit /b 0
+
+:: --- Error handlers ---
+:no_requirements
+echo  [ERROR] requirements.txt not found.
+echo  Run this script from the project directory.
+pause
+exit /b 1
+
+:no_curl
+echo  [ERROR] curl is not available to download Python.
+echo  Please install Python %PY_VER% manually:
+echo  https://www.python.org/downloads/
+pause
+exit /b 1
+
+:download_failed
+echo  [ERROR] Failed to download Python installer.
+echo  Please install Python %PY_VER% manually:
+echo  https://www.python.org/downloads/
+pause
+exit /b 1
+
+:python_not_found_after
+echo.
+echo  [ERROR] Python still not found after installation.
+echo  Close this window, reopen a new terminal, and try again.
+pause
+exit /b 1
+
+:bad_version
+echo  [ERROR] Python 3.13 or higher is required. Found: !PYVER_FULL!
+pause
+exit /b 1
+
+:venv_failed
+echo  [ERROR] Failed to create virtual environment.
+pause
+exit /b 1
+
+:deps_failed
+echo.
+echo  [ERROR] Failed to install dependencies. Cleaning up...
+rmdir /s /q venv
+pause
+exit /b 1
+

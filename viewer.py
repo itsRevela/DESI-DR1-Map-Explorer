@@ -503,7 +503,7 @@ class Viewer:
         self._highlight.visible = False
 
         self._grid_visuals: list = []
-        self._grid_visible = False
+        self._grid_visible = True
         self._build_grid()
 
         self._held_keys: set[str] = set()
@@ -623,7 +623,6 @@ class Viewer:
                     pos=pts, color=(0.5, 0.5, 0.7, grid_alpha),
                     parent=self.view.scene, width=1.0,
                 )
-                line.visible = False
                 self._grid_visuals.append(line)
 
             label = scene.visuals.Text(
@@ -632,7 +631,6 @@ class Viewer:
                 font_size=8, parent=self.view.scene,
                 anchor_x="left", anchor_y="bottom",
             )
-            label.visible = False
             self._grid_visuals.append(label)
 
         axis_len = max(radii) * 1.1
@@ -649,7 +647,6 @@ class Viewer:
                 pos=pts, color=color,
                 parent=self.view.scene, width=1.0,
             )
-            line.visible = False
             self._grid_visuals.append(line)
 
     @staticmethod

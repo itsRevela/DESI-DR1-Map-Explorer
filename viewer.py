@@ -233,7 +233,11 @@ class _FlyCameraNoWheel(scene.cameras.FlyCamera):
                 approach = pre_dir / pre_norm if pre_norm > 1e-10 else np.array([0., 0., 1.])
                 eye = self._lock_target - approach * min_dist
                 self._center = tuple(eye)
-            quat = _look_at_quat(eye, self._lock_target)
+            current_up = np.array(
+                self._rotation1.inverse().rotate_point((0, 1, 0)),
+                dtype=np.float64,
+            )
+            quat = _look_at_quat(eye, self._lock_target, up_hint=current_up)
             self._rotation1 = VispyQuat(*quat)
             self.view_changed()
 
@@ -393,14 +397,18 @@ def _mat3_to_quat(R: np.ndarray) -> np.ndarray:
                      (R[1, 2] + R[2, 1]) / s, 0.25 * s])
 
 
-def _look_at_quat(eye: np.ndarray, target: np.ndarray) -> np.ndarray:
+def _look_at_quat(eye: np.ndarray, target: np.ndarray,
+                   up_hint: np.ndarray | None = None) -> np.ndarray:
     """World-to-camera quaternion [w,x,y,z] for camera at *eye* facing *target*."""
     fwd = np.asarray(target, dtype=np.float64) - np.asarray(eye, dtype=np.float64)
     d = np.linalg.norm(fwd)
     if d < 1e-10:
         return np.array([1.0, 0.0, 0.0, 0.0])
     fwd /= d
-    up_hint = np.array([0.0, 0.0, 1.0])
+    if up_hint is None:
+        up_hint = np.array([0.0, 0.0, 1.0])
+    else:
+        up_hint = np.asarray(up_hint, dtype=np.float64)
     if abs(np.dot(fwd, up_hint)) > 0.999:
         up_hint = np.array([0.0, 1.0, 0.0])
     right = np.cross(fwd, up_hint)
@@ -1040,7 +1048,8 @@ class Viewer:
         pos = self.pc.xyz[idx:idx + 1]
         self._highlight.set_data(
             pos=pos, size=np.array([HIGHLIGHT_SIZE]),
-            face_color=HIGHLIGHT_COLOR, edge_width=0.0, symbol="disc",
+            face_color=np.array([[0, 0, 0, 0]], dtype=np.float32),
+            edge_color=HIGHLIGHT_COLOR, edge_width=2.0, symbol="disc",
         )
         self._highlight.visible = True
         self._info_panel.setHtml(self._build_info_html(idx))

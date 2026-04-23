@@ -8,19 +8,22 @@ A GPU-accelerated 3D fly-through viewer for the [DESI](https://www.desi.lbl.gov/
 
 ## Features
 
-- **Fly-through camera** with WASD + mouse-look, adjustable speed, and shift-boost
-- **Point selection** (left-click) with camera lock-on, distance-scaled orbiting, and an info panel showing redshift, distance, luminosity, magnitudes, and lookback time
-- **Clickable external links** for each selected object: DESI Spectrum, Legacy Survey sky image, NED, SIMBAD
+- **Fly-through camera** with WASD + mouse-look, camera roll, adjustable speed, and shift-boost
+- **Point selection** (left-click) with camera lock-on, distance-scaled orbiting, unlimited pitch, and roll while locked
+- **Info panel** for selected objects showing redshift, lookback time, distance, magnitudes, luminosity, g-r color, DESI target class, and RA/Dec
+- **Clickable external links** for each selected object: Legacy Survey close-up, wide field, NED, SIMBAD
 - **6 color modes** (press V to cycle):
+  - **DESI target class** (default) - LRG / ELG / BGS / QSO / Secondary / Unclassified
   - **Redshift** (z) - cyan (nearby) to red (distant)
   - **Absolute magnitude** (M_r) - intrinsic brightness
   - **Spectral type** - GALAXY / QSO / other
-  - **DESI target class** - LRG / ELG / BGS / QSO / Secondary / Unclassified
   - **Rest-frame g-r** - blue (star-forming) to red (elliptical)
   - **Lookback time** - 0 Gyr (now) to 13 Gyr (ancient)
 - **Color legend** (press G) with gradient bars or categorical swatches
+- **Render distance** control ([ / ] keys) with GPU fog shader for depth cueing
+- **3D distance grid** (press J) with concentric spheres at 1000/2000/4000/6000 Mpc and RGB axis lines
 - **Two size modes** - absolute luminosity or apparent flux
-- **LOD** - automatic level-of-detail for datasets above 5M points
+- **LOD** - level-of-detail subset rendering for large datasets
 - **Auto-download** - fetches the FITS catalog from DESI servers with resume support
 
 ## Quick Start
@@ -50,19 +53,22 @@ The first run downloads the FITS file and builds a processed cache (`points_v4.n
 |-----|--------|
 | W / A / S / D | Move forward / left / back / right |
 | F / C | Move up / down |
+| Q / E | Roll left / right |
 | Shift (hold) | 5x speed boost |
 | Scroll wheel | Adjust movement speed |
 | Right-click drag | Look around (cursor captured) |
 | Left-click | Select / deselect nearest point |
+| [ / ] | Decrease / increase render distance |
 | V | Cycle color mode |
 | G | Toggle color legend |
+| J | Toggle distance grid |
 | L | Toggle point size (luminosity / flux) |
 | K | Toggle LOD on/off |
 | T | Swap fly / turntable camera |
 | H | Toggle help overlay |
 | Esc | Quit |
 
-When a point is selected, the camera locks onto it. WASD orbits around the target with distance-scaled speed. Left-click again to deselect and resume free flight.
+When a point is selected, the camera locks onto it. WASD orbits around the target with distance-scaled speed. Q/E rolls the view. F/C orbits vertically with no pitch limit. Left-click again to deselect and resume free flight.
 
 ## Architecture
 
@@ -75,13 +81,13 @@ viewer.py        Vispy + PyQt6 GPU renderer, camera, selection, UI
 
 ### Data Pipeline
 
-1. **Download** - fetches the DESI zcatalog FITS file (~2-8 GB) with automatic resume
+1. **Download** - fetches the DESI zcatalog FITS file (~2-21 GB) with automatic resume
 2. **Process** - filters for reliable extragalactic objects (ZWARN=0, not STAR, 0.001 < z < 4.0), computes Planck18 comoving distances, absolute magnitudes, lookback times, and caches everything to a `.npz` file
-3. **View** - uploads positions to the GPU as a point cloud with additive blending for a natural starfield glow
+3. **View** - uploads positions to the GPU as a point cloud with additive blending and a custom depth fog shader for distance attenuation
 
 ### Selection & Picking
 
-Point selection uses a KD-tree (built in background at startup) with ray-marching: 2000 samples along the view ray query the tree for k=3 nearest neighbors, then the candidate with the smallest angular offset from the ray wins. This scales to 18M+ points with ~1ms pick time.
+Point selection uses a KD-tree (built in background at startup) with ray-marching: 2000 samples along the view ray (hybrid log+linear spacing) query the tree for k=5 nearest neighbors. Candidates are filtered by render distance and angular threshold, then the closest to the camera wins. This scales to 18M+ points with ~1ms pick time.
 
 ## Data Sources
 

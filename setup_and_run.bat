@@ -79,6 +79,9 @@ if %errorlevel% neq 0 (
 )
 
 :: --- Version check ---
+set "PYVER_FULL=unknown"
+set "PYMAJ=0"
+set "PYMIN=0"
 for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set "PYVER_FULL=%%v"
 for /f "tokens=1,2 delims=." %%a in ("!PYVER_FULL!") do (
     set "PYMAJ=%%a"
@@ -86,6 +89,13 @@ for /f "tokens=1,2 delims=." %%a in ("!PYVER_FULL!") do (
 )
 echo  [OK] Python !PYVER_FULL! detected
 
+if !PYMAJ! equ 0 (
+    echo  [ERROR] Could not determine Python version.
+    echo  Make sure Python is installed correctly and not the Windows Store stub.
+    echo  https://www.python.org/downloads/
+    pause
+    exit /b 1
+)
 if !PYMAJ! lss %PY_MIN_MAJOR% (
     echo  [ERROR] Python %PY_MIN_MAJOR%.%PY_MIN_MINOR%+ is required. Found: !PYVER_FULL!
     pause

@@ -425,7 +425,7 @@ def _look_at_quat(eye: np.ndarray, target: np.ndarray,
 @dataclass
 class ViewerState:
     size_mode: str = "lum"              # "lum" | "flux"
-    color_mode: str = "subtype"         # spectype|redshift|absmag|subtype|gr|lookback
+    color_mode: str = "gr"              # spectype|redshift|absmag|subtype|gr|lookback
     camera_mode: str = "fly"            # "fly" | "turntable"
     lod_enabled: bool = True            # user can force-disable with K
     lod_active: bool = False

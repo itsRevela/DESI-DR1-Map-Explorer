@@ -1,0 +1,25 @@
+# DESI Map Explorer — tested against Python 3.14.3 (Windows).
+# Install: venv\Scripts\pip install -r requirements.txt
+#
+# If any of these fail to install on a newer Python release, try:
+#   - PySide6 as a drop-in for PyQt6 (same Qt6 API; swap 'pyqt6' -> 'pyside6'
+#     in viewer.run_viewer())
+#   - Recreating the venv against Python 3.13, which has broader wheel coverage.
+
+# Core numerics
+numpy==2.4.4
+scipy==1.17.1
+
+# FITS + cosmology
+astropy==7.2.0
+
+# Qt backend for Vispy
+PyQt6==6.11.0
+
+# GPU point-cloud rendering
+vispy==0.16.1
+
+# Download + progress + memory
+requests==2.33.1
+tqdm==4.67.3
+psutil==7.2.2

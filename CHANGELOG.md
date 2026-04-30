@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `setup_and_run.bat` failing on second launch with "the system cannot find the
+  batch label specified" for users who downloaded via GitHub ZIP or cloned with
+  `core.autocrlf=false`. The repo now ships a `.gitattributes` enforcing
+  `*.bat text eol=crlf`, so checkouts and ZIP archives always deliver CRLF
+  line endings (Windows CMD's `goto` parser is unreliable on LF-only files).
+- Dataset selection branch in `setup_and_run.bat`: `if ... & goto :launch`
+  was parsed with `goto :launch` outside the `if`, so picking option 2 fell
+  through with `DATASET` empty and the default-to-EDR fallback was unreachable.
+  Replaced with parenthesized `if` blocks.
+
 ### Added
 - Right-click point selection: right-click selects nearest galaxy/QSO to cursor,
   right-click again deselects (toggle behavior)

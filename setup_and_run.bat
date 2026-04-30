@@ -104,8 +104,14 @@ echo.
 set "choice="
 set /p choice="  Enter choice (1 or 2): "
 
-if "!choice!"=="1" set "DATASET=edr" & goto :launch
-if "!choice!"=="2" set "DATASET=dr1" & goto :launch
+if "!choice!"=="1" (
+    set "DATASET=edr"
+    goto :launch
+)
+if "!choice!"=="2" (
+    set "DATASET=dr1"
+    goto :launch
+)
 echo  Invalid choice, defaulting to EDR...
 set "DATASET=edr"
 

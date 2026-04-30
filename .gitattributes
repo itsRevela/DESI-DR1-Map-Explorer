@@ -1,0 +1,4 @@
+# Force CRLF for Windows batch scripts so they parse correctly on Windows
+# regardless of the user's core.autocrlf setting or download method (clone vs ZIP).
+*.bat text eol=crlf
+*.cmd text eol=crlf

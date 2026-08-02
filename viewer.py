@@ -9,14 +9,16 @@ fast motion so interactivity stays above 30 fps on large catalogs.
 from __future__ import annotations
 
 import collections
+import html
 import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QCursor
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QCursor, QDesktopServices
 from PyQt6.QtWidgets import QLabel, QTextBrowser
 from scipy.spatial import cKDTree
 from vispy import scene
@@ -24,6 +26,8 @@ from vispy.color import Colormap, get_colormap
 from vispy.util.quaternion import Quaternion as VispyQuat
 from vispy.visuals.filters import Filter
 
+from favorites import FavoriteEntry, FavoritesStore
+from favorites_ui import FavoritesPanel
 from process import (
     PointCloud, SPECTYPE_GALAXY, SPECTYPE_QSO, SPECTYPE_OTHER,
 )
@@ -436,9 +440,14 @@ class ViewerState:
 # --- main viewer -------------------------------------------------------------
 
 class Viewer:
-    def __init__(self, pc: PointCloud, dataset: str = "DR1"):
+    def __init__(self, pc: PointCloud, dataset: str = "DR1",
+                 favorites_path: Path | str | None = None):
         self.pc = pc
+        self.dataset = dataset.lower()
         self.state = ViewerState()
+        if favorites_path is None:
+            favorites_path = Path("data") / "favorites.json"
+        self.favorites = FavoritesStore.load(favorites_path)
 
         print(f"[viewer] precomputing size arrays...")
         self.size_lum = _size_from_log_L(pc.log_L)
@@ -560,7 +569,11 @@ class Viewer:
             pos=(self.canvas.size[0] - 10, self.canvas.size[1] - 10),
         )
         self._info_panel = QTextBrowser(parent=self.canvas.native)
-        self._info_panel.setOpenExternalLinks(True)
+        # Links are handled manually: http(s) opens the browser, the custom
+        # fav: scheme toggles favorite status (setOpenExternalLinks would
+        # hand fav: to the OS, which has no handler for it).
+        self._info_panel.setOpenLinks(False)
+        self._info_panel.anchorClicked.connect(self._on_info_anchor)
         self._info_panel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._info_panel.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -593,6 +606,12 @@ class Viewer:
             "  font-size: 9pt;"
             "}"
         )
+        self._fav_panel = FavoritesPanel(
+            self.favorites, self.dataset, parent=self.canvas.native)
+        self._fav_panel.goto_requested.connect(self._goto_favorite)
+        self._fav_panel.favorites_changed.connect(self._on_favorites_changed)
+        self._fav_panel.hide()
+
         self.canvas.events.resize.connect(self._on_resize)
 
         self._update_status()
@@ -753,6 +772,8 @@ class Viewer:
             "  G        : toggle color legend\n"
             "  L        : toggle size (luminosity <-> apparent flux)\n"
             "  K        : toggle LOD on/off\n"
+            "  M        : favorite / unfavorite selected point\n"
+            "  B        : toggle favorites panel\n"
             "  H        : toggle this help\n"
             "  Esc      : quit\n"
         )
@@ -778,6 +799,8 @@ class Viewer:
         if self._legend_label.isVisible():
             self._legend_label.move(
                 10, h - self._legend_label.height() - 30)
+        if self._fav_panel.isVisible():
+            self._position_favorites_panel()
 
     # -- input ---------------------------------------------------------------
 
@@ -811,8 +834,14 @@ class Viewer:
             self._toggle_grid()
         elif key == "G":
             self._toggle_legend()
+        elif key == "B":
+            self._toggle_favorites_panel()
+        elif key == "M":
+            self._toggle_selected_favorite()
         elif key == "H":
             self._help_label.setVisible(not self._help_label.isVisible())
+            if self._fav_panel.isVisible():
+                self._position_favorites_panel()
         elif key == "ESCAPE":
             self.canvas.close()
 
@@ -1049,13 +1078,7 @@ class Viewer:
             edge_color=HIGHLIGHT_COLOR, edge_width=2.0, symbol="disc",
         )
         self._highlight.visible = True
-        self._info_panel.setHtml(self._build_info_html(idx))
-        self._info_panel.document().adjustSize()
-        h = int(self._info_panel.document().size().height()) + 24
-        self._info_panel.setFixedHeight(min(h, 400))
-        w_canvas = self.canvas.size[0]
-        self._info_panel.move(w_canvas - self._info_panel.width() - 10, 10)
-        self._info_panel.show()
+        self._show_info_panel(idx)
         if self.state.camera_mode == "fly":
             target = self.pc.xyz[idx].astype(np.float64)
             ref = float(np.linalg.norm(target - np.array(self._fly.center)))
@@ -1066,6 +1089,15 @@ class Viewer:
         self.canvas.update()
         print(f"[viewer] selected point {idx}")
 
+    def _show_info_panel(self, idx: int) -> None:
+        self._info_panel.setHtml(self._build_info_html(idx))
+        self._info_panel.document().adjustSize()
+        h = int(self._info_panel.document().size().height()) + 24
+        self._info_panel.setFixedHeight(min(h, 440))
+        w_canvas = self.canvas.size[0]
+        self._info_panel.move(w_canvas - self._info_panel.width() - 10, 10)
+        self._info_panel.show()
+
     def _deselect(self) -> None:
         self.state.selected_idx = None
         self._fly._lock_target = None
@@ -1074,6 +1106,88 @@ class Viewer:
         self._update_status()
         self.canvas.update()
         print("[viewer] deselected")
+
+    # -- favorites --------------------------------------------------------------
+
+    def _entry_for_idx(self, idx: int) -> FavoriteEntry:
+        pc = self.pc
+        names = {SPECTYPE_GALAXY: "GALAXY", SPECTYPE_QSO: "QSO",
+                 SPECTYPE_OTHER: "OTHER"}
+        return FavoriteEntry(
+            target_id=int(pc.target_id[idx]),
+            dataset=self.dataset,
+            spectype=names.get(int(pc.spectype[idx]), "?"),
+            z=float(pc.z[idx]),
+            ra=float(pc.target_ra[idx]),
+            dec=float(pc.target_dec[idx]),
+        )
+
+    def _toggle_selected_favorite(self) -> None:
+        idx = self.state.selected_idx
+        if idx is None:
+            print("[favorites] select a point first (left-click), then press M")
+            return
+        entry = self._entry_for_idx(idx)
+        now_fav = self.favorites.toggle(entry)
+        print(f"[favorites] {'added' if now_fav else 'removed'} "
+              f"TARGETID {entry.target_id}")
+        self._show_info_panel(idx)
+        if self._fav_panel.isVisible():
+            self._fav_panel.refresh()
+
+    def _toggle_favorites_panel(self) -> None:
+        if self._fav_panel.isVisible():
+            self._fav_panel.hide()
+            self.canvas.native.setFocus()
+        else:
+            self._fav_panel.refresh()
+            self._position_favorites_panel()
+            self._fav_panel.show()
+            self._fav_panel.raise_()
+        state = "on" if self._fav_panel.isVisible() else "off"
+        print(f"[viewer] favorites panel {state}")
+
+    def _position_favorites_panel(self) -> None:
+        _, h = self.canvas.size
+        y = 10
+        if self._help_label.isVisible():
+            y = self._help_label.geometry().bottom() + 10
+        self._fav_panel.move(10, y)
+        self._fav_panel.setFixedHeight(max(240, h - y - 30))
+
+    def _on_favorites_changed(self) -> None:
+        # Nickname/notes edited or entry removed in the panel — keep the
+        # info panel's favorite line in sync.
+        if self.state.selected_idx is not None:
+            self._show_info_panel(self.state.selected_idx)
+
+    def _on_info_anchor(self, url: QUrl) -> None:
+        if url.scheme() in ("http", "https"):
+            QDesktopServices.openUrl(url)
+        elif url.scheme() == "fav":
+            self._toggle_selected_favorite()
+
+    def _goto_favorite(self, target_id: int, dataset: str) -> None:
+        matches = np.nonzero(self.pc.target_id == np.int64(target_id))[0]
+        if matches.size == 0:
+            print(f"[favorites] TARGETID {target_id} ({dataset}) is not in "
+                  f"the loaded catalog ({self.dataset})")
+            return
+        idx = int(matches[0])
+        if self.state.camera_mode != "fly":
+            self._toggle_camera()
+        # Teleport to ~50 Mpc from the target (approaching from the current
+        # camera side) so the lock-on orbit starts at a useful distance.
+        target = self.pc.xyz[idx].astype(np.float64)
+        eye = np.array(self._fly.center, dtype=np.float64)
+        offset = eye - target
+        dist = float(np.linalg.norm(offset))
+        approach = 50.0
+        if dist > approach:
+            direction = offset / dist if dist > 1e-9 else np.array([0.0, 0.0, 1.0])
+            self._fly.center = tuple(target + direction * approach)
+        self._select(idx)
+        self.canvas.native.setFocus()
 
     def _build_info_html(self, idx: int) -> str:
         pc = self.pc
@@ -1106,25 +1220,45 @@ class Viewer:
         dec = float(pc.target_dec[idx])
         tid = int(pc.target_id[idx])
 
-        img_url = (f"https://www.legacysurvey.org/viewer"
-                   f"?ra={ra:.6f}&dec={dec:.6f}&layer=ls-dr10&zoom=16")
-        wide_url = (f"https://www.legacysurvey.org/viewer"
-                    f"?ra={ra:.6f}&dec={dec:.6f}&layer=ls-dr10&zoom=12")
+        # ls-dr9: matches the LS photometry DESI DR1 targeting used, and its
+        # tiles are served from S3 (the viewer's ls-dr10 layer no longer
+        # exists, and ls-dr11 full-res tiles come from hosts that currently
+        # serve a broken TLS certificate, rendering a black map).
+        img_url = (f"https://viewer.legacysurvey.org/"
+                   f"?ra={ra:.6f}&dec={dec:.6f}&layer=ls-dr9&zoom=16")
+        wide_url = (f"https://viewer.legacysurvey.org/"
+                    f"?ra={ra:.6f}&dec={dec:.6f}&layer=ls-dr9&zoom=12")
         ned_url = (f"https://ned.ipac.caltech.edu/cgi-bin/nph-objsearch"
                    f"?search_type=Near+Position+Search"
                    f"&in_csys=Equatorial&in_equinox=J2000.0"
                    f"&lon={ra:.6f}d&lat={dec:.6f}d&radius=1.0"
                    f"&out_csys=Equatorial&out_equinox=J2000.0"
                    f"&of=pre_text")
-        simbad_url = (f"https://simbad.u-strasbg.fr/simbad/sim-coo"
+        # Most DESI targets are too faint to be in SIMBAD, so a tight radius
+        # usually yields "No astronomical object found". 2 arcmin (SIMBAD's
+        # own form default) returns the nearest catalogued objects instead,
+        # sorted by distance.
+        simbad_url = (f"https://simbad.cds.unistra.fr/simbad/sim-coo"
                       f"?Coord={ra:.6f}+{dec:.6f}"
-                      f"&Radius=10&Radius.unit=arcsec")
+                      f"&Radius=2&Radius.unit=arcmin")
+
+        fav = self.favorites.get(self.dataset, tid)
+        if fav is None:
+            fav_html = "<a href='fav:toggle'>&#9734; Add to Favorites</a>"
+        else:
+            fav_html = ("<a href='fav:toggle'>&#9733; Favorited "
+                        "&mdash; click to remove</a>")
+        nick_html = ""
+        if fav is not None and fav.nickname:
+            nick_html = (f"<span style='color:#ffdd88'>&#9733; "
+                         f"{html.escape(fav.nickname)}</span><br>")
 
         g = "#999999"
         return (
             f"<div style='font-family:Consolas,monospace;line-height:1.6'>"
             f"<span style='color:#ffdd88;font-weight:bold'>[{stype}]</span> "
             f"<span style='color:#aaa'>TARGETID</span> {tid}<br>"
+            f"{nick_html}"
             f"<span style='color:{g}'>Target</span> {sub_label}<br>"
             f"<br>"
             f"<span style='color:{g}'>Redshift</span> "
@@ -1145,6 +1279,7 @@ class Viewer:
             f"<span style='color:{g}'>RA / Dec</span> "
             f"{ra:.4f}&deg; / {dec:.4f}&deg;<br>"
             f"<br>"
+            f"{fav_html}<br>"
             f"<a href='{img_url}'>Sky Close-up</a>"
             f" &nbsp;&#8226;&nbsp; "
             f"<a href='{wide_url}'>Wide Field</a><br>"
@@ -1231,7 +1366,8 @@ def _rss_mb() -> float:
         return 0.0
 
 
-def run_viewer(pc: PointCloud, dataset: str = "DR1") -> int:
+def run_viewer(pc: PointCloud, dataset: str = "DR1",
+               favorites_path: Path | str | None = None) -> int:
     from vispy import app as vispy_app
 
     app = vispy_app.use_app("pyqt6")
@@ -1241,7 +1377,7 @@ def run_viewer(pc: PointCloud, dataset: str = "DR1") -> int:
     print(f"[viewer] starting | points={pc.n:,} | xyz={pc.xyz.nbytes/1e6:.1f} MB "
           f"| rss={mem0:.0f} MB | flux_column={pc.flux_column}")
 
-    viewer = Viewer(pc, dataset=dataset)
+    viewer = Viewer(pc, dataset=dataset, favorites_path=favorites_path)
     viewer.center_camera()
     viewer.show()
 

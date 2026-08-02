@@ -12,6 +12,7 @@ A GPU-accelerated 3D fly-through viewer for the [DESI](https://www.desi.lbl.gov/
 - **Point selection** (left-click) with camera lock-on, distance-scaled orbiting, unlimited pitch, and roll while locked
 - **Info panel** for selected objects showing redshift, lookback time, distance, magnitudes, luminosity, g-r color, DESI target class, and RA/Dec
 - **Clickable external links** for each selected object: Legacy Survey close-up, wide field, NED, SIMBAD
+- **Favorites** (press B) - bookmark targets, give them nicknames and notes, search/filter them (by nickname, notes, TARGETID, or object type), and fly back to them with a double-click; persisted to `data/favorites.json`
 - **6 color modes** (press V to cycle):
   - **DESI target class** (default) - LRG / ELG / BGS / QSO / Secondary / Unclassified
   - **Redshift** (z) - cyan (nearby) to red (distant)
@@ -64,6 +65,8 @@ The first run downloads the FITS file and builds a processed cache (`points_v4.n
 | J | Toggle distance grid |
 | L | Toggle point size (luminosity / flux) |
 | K | Toggle LOD on/off |
+| M | Favorite / unfavorite the selected point |
+| B | Toggle favorites panel |
 | T | Swap fly / turntable camera |
 | H | Toggle help overlay |
 | Esc | Quit |
@@ -77,6 +80,8 @@ main.py          Entry point, CLI args, orchestrates pipeline
 download.py      HTTP download with range-based resume + tqdm progress
 process.py       FITS filtering, Planck18 cosmology, npz caching
 viewer.py        Vispy + PyQt6 GPU renderer, camera, selection, UI
+favorites.py     Favorites store: JSON persistence, search, editing
+favorites_ui.py  Favorites overlay panel (list, search box, editor)
 ```
 
 ### Data Pipeline
